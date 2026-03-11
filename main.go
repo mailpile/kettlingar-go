@@ -20,7 +20,7 @@ type MyService struct {
 
 	// These are configuration, settable via the CLI or a config file on start
 	Honkey string `default:"Beep" help:"The honkey setting"`
-	Tonk   int    `default:"42"   help:"The answer to everthing"`
+	Tonk   int    `default:"42"   help:"The answer to everything"`
 
 	// These match the API methods defined below, for use with MakeClient.
 	Simple func(PASimpleArgs) Response
@@ -88,7 +88,7 @@ func (r *Response) Render(mimeType string) (string, []byte) {
 	return "text/plain", nil // Default MIME type for Response objects
 }
 
-func clientTest(svc *MyService, ks *kettlingar.KettlingarService, delay int) {
+func (svc *MyService) clientTest(ks *kettlingar.KettlingarService) {
 	kettlingar.MakeClient(svc.Name, ks.Url, svc)
 
 	res := svc.Simple(PASimpleArgs{Text: "kitten"})
@@ -109,7 +109,7 @@ func main() {
 
 	go (func() {
 		time.Sleep(2 * time.Second) // Wait for server to start
-		clientTest(&svc, ks, 2)
+		svc.clientTest(ks)
 	})()
 
 	ks.DefaultMain()
