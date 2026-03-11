@@ -27,7 +27,7 @@ Status: Experimental, almost useful.
 
 TODO:
 
-- Think about configuration, Python kettlingar made that easy
+- Document how configuration works (viper and cobra)
 - Think about error handling a bit more, especially in generators
 - Serve normal web requests as well, serve as HTMX backend?
 - Websocket support?

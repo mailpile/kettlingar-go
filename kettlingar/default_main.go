@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -62,11 +63,13 @@ func (ks *KettlingarService) DefaultMain() {
 		Use:   "start",
 		Short: "Start server",
 		Run: func(cmd *cobra.Command, args []string) {
+			ks.syncServiceConfigs()
 			ks.startServer(cmd)
 		},
 	}
 	startCmd.Flags().StringP("port", "p", "8080", "Port to listen on")
 	startCmd.Flags().BoolP("foreground", "F", false, "Run in foreground")
+	ks.addServiceFlags(startCmd) // Iterate over ks.services, add app-specific flags
 	rootCmd.AddCommand(startCmd)
 
 	rootCmd.AddCommand(&cobra.Command{
@@ -120,6 +123,138 @@ func (ks *KettlingarService) DefaultMain() {
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+func registerFlag(flags *pflag.FlagSet, name, def, help string, t reflect.Type) {
+	// Check for specific named types first
+	switch t {
+	case reflect.TypeOf(time.Duration(0)):
+		d, _ := time.ParseDuration(def)
+		flags.Duration(name, d, help)
+		return
+	case reflect.TypeOf(time.Time{}):
+		// We validate the default string is a valid date/time
+		flags.String(name, def, fmt.Sprintf("%s (Format: RFC3339 or YYYY-MM-DD)", help))
+		return
+	}
+
+	// Fall back to checking primitives
+	switch t.Kind() {
+	case reflect.Bool:
+		d, _ := strconv.ParseBool(def)
+		flags.Bool(name, d, help)
+
+	case reflect.Int, reflect.Int64:
+		d, _ := strconv.ParseInt(def, 10, 64)
+		flags.Int64(name, d, help)
+
+	case reflect.Float64, reflect.Float32:
+		d, _ := strconv.ParseFloat(def, 64)
+		flags.Float64(name, d, help)
+
+	default:
+		// netip.Addr and others fall back to String
+		flags.String(name, def, help)
+	}
+}
+
+// Add service flags based on annotations in the interface
+func (ks *KettlingarService) addServiceFlags(cmd *cobra.Command) {
+	for _, svc := range ks.services {
+		v := reflect.ValueOf(svc)
+		if v.Kind() == reflect.Ptr {
+			v = v.Elem()
+		}
+		if v.Kind() != reflect.Struct {
+			continue
+		}
+
+		t := v.Type()
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			help := field.Tag.Get("help")
+			def := field.Tag.Get("default")
+
+			if help == "" || def == "" {
+				continue
+			}
+
+			flagName := strings.ToLower(field.Name)
+
+			// Use our extracted helper
+			registerFlag(cmd.Flags(), flagName, def, help, field.Type)
+
+			// Bind to Viper
+			viper.BindPFlag(flagName, cmd.Flags().Lookup(flagName))
+		}
+	}
+}
+
+// Update our service config based on flags/viper settings configurd above
+func (ks *KettlingarService) syncServiceConfigs() {
+	for _, svc := range ks.services {
+		v := reflect.ValueOf(svc)
+		if v.Kind() == reflect.Ptr {
+			v = v.Elem()
+		}
+		if v.Kind() != reflect.Struct {
+			continue
+		}
+		t := v.Type()
+
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			if field.Tag.Get("help") == "" || field.Tag.Get("default") == "" {
+				continue
+			}
+
+			flagName := strings.ToLower(field.Name)
+			f := v.Field(i)
+
+			if f.CanSet() {
+				// Handle Named Types First
+				if f.Type() == reflect.TypeOf(time.Duration(0)) {
+					f.SetInt(int64(viper.GetDuration(flagName)))
+					continue
+				}
+
+				if f.Type() == reflect.TypeOf(time.Time{}) {
+					valStr := viper.GetString(flagName)
+					// Try RFC3339 first, then fallback to Date only
+					if tm, err := time.Parse(time.RFC3339, valStr); err == nil {
+						f.Set(reflect.ValueOf(tm))
+					} else if tm, err := time.Parse("2006-01-02", valStr); err == nil {
+						f.Set(reflect.ValueOf(tm))
+					} else {
+						ks.Logger.Error("invalid date format", "field", flagName, "value", valStr)
+					}
+					continue
+				}
+
+				// Handle Primitive Kinds
+				switch f.Kind() {
+				case reflect.String:
+					f.SetString(viper.GetString(flagName))
+				case reflect.Int, reflect.Int64:
+					f.SetInt(viper.GetInt64(flagName))
+				case reflect.Bool:
+					f.SetBool(viper.GetBool(flagName))
+				case reflect.Float64, reflect.Float32:
+					f.SetFloat(viper.GetFloat64(flagName))
+				case reflect.Struct:
+					// netip.Addr is handled here as it is a struct kind
+					if f.Type() == reflect.TypeOf(netip.Addr{}) {
+						valStr := viper.GetString(flagName)
+						if addr, err := netip.ParseAddr(valStr); err == nil {
+							f.Set(reflect.ValueOf(addr))
+						} else {
+							ks.Logger.Error("invalid IP address", "field", flagName, "value", valStr)
+						}
+					}
+				}
+			}
+		}
 	}
 }
 

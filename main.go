@@ -17,6 +17,11 @@ type Response struct {
 
 type MyService struct {
 	Name string
+
+	// These are configuration, settable via the CLI or a config file on start
+	Honkey string `default:"Beep" help:"The honkey setting"`
+	Tonk   int    `default:"42"   help:"The answer to everthing"`
+
 	// These match the API methods defined below, for use with MakeClient.
 	Simple func(PASimpleArgs) Response
 	Stream func(chan Response, PAStreamArgs)
@@ -41,6 +46,10 @@ type PAStreamArgs struct {
 }
 
 func (s *MyService) PublicApiStream(out chan<- *Response, kri *kettlingar.RequestInfo, args PAStreamArgs) {
+	text := args.Text
+	if text == "-" {
+		text = s.Honkey
+	}
 	for i := 0; i < args.Count; i++ {
 		time.Sleep(500 * time.Millisecond)
 		out <- &Response{
@@ -48,7 +57,7 @@ func (s *MyService) PublicApiStream(out chan<- *Response, kri *kettlingar.Reques
 				Progress: "Made progress sending stuff!",
 				IsBoth:   true,
 			},
-			Data: args.Text + " iteration: " + s.Name,
+			Data: fmt.Sprintf("%s #%d iteration %s", text, s.Tonk, s.Name),
 		}
 	}
 }

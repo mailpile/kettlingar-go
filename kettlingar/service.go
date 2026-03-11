@@ -50,10 +50,11 @@ type KettlingarService struct {
 	Version     string
 	mux         *http.ServeMux
 	toJson      *MsgpackJsonConverter
+	services    []interface{}
 	registry    []MethodDesc
 	metrics     *Metrics
 	metricsPriv *Metrics
-	logger      *slog.Logger
+	Logger      *slog.Logger
 }
 
 type ProgressUpdate struct {
@@ -90,11 +91,12 @@ func MakeService(name, secret string, mux *http.ServeMux, service interface{}) *
 		Secret:      secret,
 		Version:     KettlingarVersion,
 		mux:         mux,
+		services:    make([]interface{}, 0),
 		registry:    make([]MethodDesc, 0),
 		toJson:      NewJsonConverter(),
 		metrics:     NewMetrics(),
 		metricsPriv: NewMetrics(),
-		logger:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Logger:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 
 	if err := ks.RegisterService(&DefaultMethods{}); err != nil {
@@ -156,6 +158,8 @@ func (ks *KettlingarService) GetApiManifest() []MethodDesc {
 }
 
 func (ks *KettlingarService) RegisterService(service interface{}) error {
+	ks.services = append(ks.services, service)
+
 	svcType := reflect.TypeOf(service)
 	svcVal := reflect.ValueOf(service)
 
@@ -315,7 +319,7 @@ func (ks *KettlingarService) handleRPC(ri *RequestInfo, methodVal reflect.Value,
 		if r := recover(); (r != nil) || (ri.HttpCode == 0) {
 			ri.HttpCode = http.StatusInternalServerError
 			http.Error(ri.Writer, "503 Internal Server Error", ri.HttpCode)
-			ks.logger.Error("Paniced", "method", ri.Method.Name, "error", r, "stack", string(debug.Stack()))
+			ks.Logger.Error("Paniced", "method", ri.Method.Name, "error", r, "stack", string(debug.Stack()))
 		}
 
 		labels := MetricLabels{
@@ -330,7 +334,7 @@ func (ks *KettlingarService) handleRPC(ri *RequestInfo, methodVal reflect.Value,
 		}
 		elapsed := uint64(time.Since(ri.Timestamp).Microseconds())
 		if ri.Method.Name != "ping" {
-			ks.logger.Info("Finished", "method", ri.Method.Name, "code", ri.HttpCode, "elapsed_us", elapsed)
+			ks.Logger.Info("Finished", "method", ri.Method.Name, "code", ri.HttpCode, "elapsed_us", elapsed)
 		}
 		ks.MetricsCount("rpc_calls_total", 1, mType, labels)
 		if !ri.Method.IsGenerator {
