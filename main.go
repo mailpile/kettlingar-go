@@ -93,6 +93,11 @@ func (svc *MyService) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	return nil
 }
 
+func (svc *MyService) ServiceShutdown(ks *kettlingar.KettlingarService) error {
+	fmt.Printf("Service shutting down\n")
+	return nil
+}
+
 func (svc *MyService) clientTest(ks *kettlingar.KettlingarService) {
 	kettlingar.MakeClient(svc.Name, ks.Url, svc)
 

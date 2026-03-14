@@ -28,6 +28,10 @@ type ServiceWithStartup interface {
 	ServiceStartup(*KettlingarService) error
 }
 
+type ServiceWithShutdown interface {
+	ServiceShutdown(*KettlingarService) error
+}
+
 var outFormat string = "text"
 var defaultURL string = "http://localhost:8123"
 
@@ -273,6 +277,16 @@ func (ks *KettlingarService) runStartupFunctions() error {
 	return nil
 }
 
+func (ks *KettlingarService) runShutdownFunctions() {
+	for _, svc := range ks.services {
+		if v, ok := svc.(ServiceWithShutdown); ok {
+			if err := v.ServiceShutdown(ks); err != nil {
+				fmt.Fprintf(os.Stderr, "Error shutting down: %+v\n", err)
+			}
+		}
+	}
+}
+
 // Helper to create a Cobra command from a MethodDesc
 func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
 	cmd := &cobra.Command{
@@ -354,6 +368,7 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
+	ks.runShutdownFunctions()
 	os.Remove(statePath)
 }
 
