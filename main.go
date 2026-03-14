@@ -88,6 +88,11 @@ func (r *Response) Render(mimeType string) (string, []byte) {
 	return "text/plain", nil // Default MIME type for Response objects
 }
 
+func (svc *MyService) ServiceStartup(ks *kettlingar.KettlingarService) error {
+	fmt.Printf("Service started with Honkey=%s and Tonk=%d\n", svc.Honkey, svc.Tonk)
+	return nil
+}
+
 func (svc *MyService) clientTest(ks *kettlingar.KettlingarService) {
 	kettlingar.MakeClient(svc.Name, ks.Url, svc)
 

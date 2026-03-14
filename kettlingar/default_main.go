@@ -24,6 +24,10 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+type ServiceWithStartup interface {
+	ServiceStartup(*KettlingarService) error
+}
+
 var outFormat string = "text"
 var defaultURL string = "http://localhost:8123"
 
@@ -258,6 +262,17 @@ func (ks *KettlingarService) syncServiceConfigs() {
 	}
 }
 
+func (ks *KettlingarService) runStartupFunctions() error {
+	for _, svc := range ks.services {
+		if v, ok := svc.(ServiceWithStartup); ok {
+			if err := v.ServiceStartup(ks); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Helper to create a Cobra command from a MethodDesc
 func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
 	cmd := &cobra.Command{
@@ -321,6 +336,11 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	srv := &http.Server{Addr: ":" + port, Handler: ks.mux}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	if err := ks.runStartupFunctions(); err != nil {
+		fmt.Fprintf(os.Stderr, "Startup Failed! %+v\n", err)
+		os.Exit(1)
+	}
 
 	go func() {
 		fmt.Printf("%s listening on %s/%s (PID: %d)\n", ks.Name, baseURL, ks.Secret, os.Getpid())
