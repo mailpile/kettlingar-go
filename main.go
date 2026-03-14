@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"os"
 	"time"
 
 	"github.com/mailpile/kettlingar-go/kettlingar"
@@ -90,6 +91,12 @@ func (r *Response) Render(mimeType string) (string, []byte) {
 
 func (svc *MyService) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	fmt.Printf("Service started with Honkey=%s and Tonk=%d\n", svc.Honkey, svc.Tonk)
+
+	go (func() {
+		time.Sleep(2 * time.Second) // Wait for server to start
+		svc.clientTest(ks)
+	})()
+
 	return nil
 }
 
@@ -116,11 +123,5 @@ func main() {
 	svc := MyService{Name: serviceName}
 	mux := http.NewServeMux()
 	ks := kettlingar.MakeService(serviceName, "", mux, &svc)
-
-	go (func() {
-		time.Sleep(2 * time.Second) // Wait for server to start
-		svc.clientTest(ks)
-	})()
-
-	ks.DefaultMain()
+	ks.DefaultMain(os.Args[0], os.Args[1:])
 }
