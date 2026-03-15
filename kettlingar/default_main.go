@@ -24,12 +24,24 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+const (
+	ExitOK = iota
+	ExitCobraFailed
+	ExitBackgroundFailed
+	ExitAlreadyRunning
+	ExitStartupFailed
+)
+
 type ServiceWithStartup interface {
 	ServiceStartup(*KettlingarService) error
 }
 
 type ServiceWithShutdown interface {
 	ServiceShutdown(*KettlingarService) error
+}
+
+type ServiceWithBackground interface {
+	ServiceBackground(*KettlingarService) error
 }
 
 var outFormat string = "text"
@@ -129,9 +141,9 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 		}
 	}
 
-        rootCmd.SetArgs(mainArgs)
+	rootCmd.SetArgs(mainArgs)
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(ExitCobraFailed)
 	}
 }
 
@@ -288,6 +300,19 @@ func (ks *KettlingarService) runShutdownFunctions() {
 	}
 }
 
+func (ks *KettlingarService) runBackgroundFunction() bool {
+	for _, svc := range ks.services {
+		if v, ok := svc.(ServiceWithBackground); ok {
+			if err := v.ServiceBackground(ks); err != nil {
+				fmt.Fprintf(os.Stderr, "Error daemonizing: %v\n", err)
+				os.Exit(ExitBackgroundFailed)
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // Helper to create a Cobra command from a MethodDesc
 func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
 	cmd := &cobra.Command{
@@ -330,18 +355,20 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	ks.autoDiscover()
 	if ks.Url != defaultURL {
 		fmt.Fprintf(os.Stderr, "Failed! Already running at: %s\n", ks.Url)
-		os.Exit(1)
+		os.Exit(ExitAlreadyRunning)
 	}
 
 	if !foreground {
-		args := append(os.Args[1:], "--foreground")
-		newCmd := exec.Command(os.Args[0], args...)
-		if err := newCmd.Start(); err != nil {
-			fmt.Printf("Error daemonizing: %v\n", err)
-			return
+		if !ks.runBackgroundFunction() {
+			args := append(os.Args[1:], "--foreground")
+			newCmd := exec.Command(os.Args[0], args...)
+			if err := newCmd.Start(); err != nil {
+				fmt.Printf("Error daemonizing: %v\n", err)
+				return
+			}
+			fmt.Printf("%s started in background (PID: %d)\n", ks.Name, newCmd.Process.Pid)
 		}
-		fmt.Printf("%s started in background (PID: %d)\n", ks.Name, newCmd.Process.Pid)
-		os.Exit(0)
+		os.Exit(ExitOK)
 	}
 
 	ks.Url = fmt.Sprintf("%s/%s", baseURL, ks.Secret)
@@ -354,7 +381,7 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 
 	if err := ks.runStartupFunctions(); err != nil {
 		fmt.Fprintf(os.Stderr, "Startup Failed! %+v\n", err)
-		os.Exit(1)
+		os.Exit(ExitStartupFailed)
 	}
 
 	go func() {
