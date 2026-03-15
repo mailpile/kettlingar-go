@@ -35,7 +35,7 @@ type ServiceWithShutdown interface {
 var outFormat string = "text"
 var defaultURL string = "http://localhost:8123"
 
-func (ks *KettlingarService) DefaultMain(osArg0 string, osArgs []string) {
+func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 	// Initialize Viper
 	viper.SetEnvPrefix(strings.ReplaceAll(strings.ToUpper(ks.Name), "-", "_"))
 	viper.AutomaticEnv()
@@ -92,7 +92,7 @@ func (ks *KettlingarService) DefaultMain(osArg0 string, osArgs []string) {
 	originalHelp := rootCmd.HelpFunc()
 	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		// Try to augment help with live data
-		rootCmd.PersistentFlags().Parse(osArgs)
+		rootCmd.PersistentFlags().Parse(mainArgs)
 		ks.autoDiscover()
 
 		which := ks.StateFn
@@ -116,8 +116,8 @@ func (ks *KettlingarService) DefaultMain(osArg0 string, osArgs []string) {
 	})
 
 	// 3. Dynamic API Discovery for direct execution
-	if len(osArgs) > 0 && !strings.HasPrefix(osArgs[0], "-") && osArgs[0] != "start" && osArgs[0] != "stop" && osArgs[0] != "help" {
-		rootCmd.PersistentFlags().Parse(osArgs)
+	if len(mainArgs) > 0 && !strings.HasPrefix(mainArgs[0], "-") && mainArgs[0] != "start" && mainArgs[0] != "stop" && mainArgs[0] != "help" {
+		rootCmd.PersistentFlags().Parse(mainArgs)
 		ks.autoDiscover()
 		manifest, err := ks.fetchManifest()
 		if err == nil {
@@ -129,6 +129,7 @@ func (ks *KettlingarService) DefaultMain(osArg0 string, osArgs []string) {
 		}
 	}
 
+        rootCmd.SetArgs(mainArgs)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
