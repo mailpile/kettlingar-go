@@ -27,10 +27,20 @@ import (
 const (
 	ExitOK = iota
 	ExitCobraFailed
-	ExitBackgroundFailed
 	ExitAlreadyRunning
+	ExitSetupFailed
+	ExitBackgroundFailed
 	ExitStartupFailed
 )
+
+// These interfaces define process-lifecycle hooks, in the order they run.
+type ServiceWithSetup interface {
+	ServiceSetup(*KettlingarService) error
+}
+
+type ServiceWithBackground interface {
+	ServiceBackground(*KettlingarService) error
+}
 
 type ServiceWithStartup interface {
 	ServiceStartup(*KettlingarService) error
@@ -38,10 +48,6 @@ type ServiceWithStartup interface {
 
 type ServiceWithShutdown interface {
 	ServiceShutdown(*KettlingarService) error
-}
-
-type ServiceWithBackground interface {
-	ServiceBackground(*KettlingarService) error
 }
 
 var outFormat string = "text"
@@ -279,6 +285,17 @@ func (ks *KettlingarService) syncServiceConfigs() {
 	}
 }
 
+func (ks *KettlingarService) runSetupFunctions() error {
+	for _, svc := range ks.services {
+		if v, ok := svc.(ServiceWithSetup); ok {
+			if err := v.ServiceSetup(ks); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (ks *KettlingarService) runStartupFunctions() error {
 	for _, svc := range ks.services {
 		if v, ok := svc.(ServiceWithStartup); ok {
@@ -356,6 +373,11 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	if ks.Url != defaultURL {
 		fmt.Fprintf(os.Stderr, "Failed! Already running at: %s\n", ks.Url)
 		os.Exit(ExitAlreadyRunning)
+	}
+
+	if err := ks.runSetupFunctions(); err != nil {
+		fmt.Fprintf(os.Stderr, "Setup Failed! %+v\n", err)
+		os.Exit(ExitSetupFailed)
 	}
 
 	if !foreground {
