@@ -48,7 +48,7 @@ type KettlingarService struct {
 	Url         string
 	StateFn     string
 	Version     string
-	mux         *http.ServeMux
+	Mux         *http.ServeMux
 	toJson      *MsgpackJsonConverter
 	services    []interface{}
 	registry    []MethodDesc
@@ -90,7 +90,7 @@ func MakeService(name, secret string, mux *http.ServeMux, service interface{}) *
 		Name:        name,
 		Secret:      secret,
 		Version:     KettlingarVersion,
-		mux:         mux,
+		Mux:         mux,
 		services:    make([]interface{}, 0),
 		registry:    make([]MethodDesc, 0),
 		toJson:      NewJsonConverter(),
@@ -295,8 +295,8 @@ func (ks *KettlingarService) RegisterService(service interface{}) error {
 			ks.handleRPC(ri, svcVal.Method(idx), method.Type)
 		}
 
-		ks.mux.HandleFunc("/"+ks.Secret+"/"+mName, handler)
-		ks.mux.HandleFunc("/"+mName, handler)
+		ks.Mux.HandleFunc("/"+ks.Secret+"/"+mName, handler)
+		ks.Mux.HandleFunc("/"+mName, handler)
 	}
 
 	return nil

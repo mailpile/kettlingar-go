@@ -397,7 +397,7 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	stateData := fmt.Sprintf("%s\n%d", ks.Url, os.Getpid())
 	os.WriteFile(statePath, []byte(stateData), 0600)
 
-	srv := &http.Server{Addr: ":" + port, Handler: ks.mux}
+	srv := &http.Server{Addr: ":" + port, Handler: ks.Mux}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
