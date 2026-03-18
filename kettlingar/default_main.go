@@ -102,7 +102,7 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 		Use:   "stop",
 		Short: "Stop server (via PID in state file)",
 		Run: func(cmd *cobra.Command, args []string) {
-			ks.stopServer()
+			ks.probeOrStopServer(false)
 		},
 	})
 
@@ -371,8 +371,10 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 
 	ks.autoDiscover()
 	if ks.Url != defaultURL {
-		fmt.Fprintf(os.Stderr, "Failed! Already running at: %s\n", ks.Url)
-		os.Exit(ExitAlreadyRunning)
+		if ks.probeOrStopServer(true) {
+			fmt.Fprintf(os.Stderr, "Failed! Already running.\n - URL: %s\n - File: %s\n\n", ks.Url, ks.StateFn)
+			os.Exit(ExitAlreadyRunning)
+		}
 	}
 
 	if err := ks.runSetupFunctions(); err != nil {
@@ -422,24 +424,39 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	os.Remove(statePath)
 }
 
-func (ks *KettlingarService) stopServer() {
+func (ks *KettlingarService) probeOrStopServer(onlyProbe bool) bool {
 	statePath := ks.getStateFilePath()
 	data, err := os.ReadFile(statePath)
 	if err != nil {
-		fmt.Println("Server not running.")
-		return
+		if !onlyProbe {
+			fmt.Fprintf(os.Stderr, "Server not running: %v", err)
+		}
+		return false
 	}
+
+	var pid int
 	lines := strings.Split(string(data), "\n")
 	if len(lines) < 2 {
 		os.Remove(statePath)
-		return
+		return false
 	}
-	var pid int
 	fmt.Sscanf(lines[1], "%d", &pid)
-	if process, err := os.FindProcess(pid); err == nil {
-		fmt.Printf("Stopping %s (PID: %d)...\n", ks.Name, pid)
-		process.Signal(syscall.SIGTERM)
+
+	sending := syscall.SIGTERM
+	if onlyProbe {
+		sending = 0
 	}
+	if process, err := os.FindProcess(pid); err == nil {
+		if !onlyProbe {
+			fmt.Printf("Stopping %s (PID: %d)...\n", ks.Name, pid)
+		}
+		if err := process.Signal(sending); err != nil {
+			fmt.Fprintf(os.Stderr, "Removing stale state: %s\n", statePath)
+			os.Remove(statePath)
+			return false
+		}
+	}
+	return true
 }
 
 func (ks *KettlingarService) getStateFilePath() string {
