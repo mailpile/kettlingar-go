@@ -330,17 +330,40 @@ func (ks *KettlingarService) runBackgroundFunction() bool {
 	return false
 }
 
+// isPositionalArgs reports whether a method argument is the special "Args"
+// field that collects positional CLI arguments rather than a --flag. It is an
+// []string, which the manifest records with an empty type name.
+func isPositionalArgs(name, typeName string) bool {
+	return name == "Args" && typeName == ""
+}
+
+func methodHasPositionalArgs(m MethodDesc) bool {
+	for aName, aType := range m.Args {
+		if isPositionalArgs(aName, aType) {
+			return true
+		}
+	}
+	return false
+}
+
 // Helper to create a Cobra command from a MethodDesc
 func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
+	use := m.Name
+	if methodHasPositionalArgs(m) {
+		use += " [args...]"
+	}
 	cmd := &cobra.Command{
-		Use:   m.Name,
+		Use:   use,
 		Short: m.Help, // Used in the command list
 		Long:  m.Docs, // Shown when specifically calling 'help <cmd>'
 		Run: func(cmd *cobra.Command, args []string) {
-			ks.doCall(m, cmd)
+			ks.doCall(m, cmd, args)
 		},
 	}
 	for aName, aType := range m.Args {
+		if isPositionalArgs(aName, aType) {
+			continue // collected from positional args, not a flag
+		}
 		flagName := strings.ToLower(aName)
 		defaultArgs := ""
 		if def, ok := m.ArgDefaults[aName]; ok {
@@ -504,9 +527,16 @@ func (ks *KettlingarService) fetchManifest() ([]MethodDesc, error) {
 	return ks.registry, nil
 }
 
-func (ks *KettlingarService) doCall(m MethodDesc, cmd *cobra.Command) {
+func (ks *KettlingarService) doCall(m MethodDesc, cmd *cobra.Command, posArgs []string) {
 	params := make(map[string]interface{})
 	for aName, aType := range m.Args {
+
+		if isPositionalArgs(aName, aType) {
+			if len(posArgs) > 0 {
+				params[aName] = posArgs
+			}
+			continue
+		}
 
 		flagName := strings.ToLower(aName)
 		viperKey := fmt.Sprintf("%s.%s", m.Name, flagName)
