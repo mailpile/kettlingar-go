@@ -22,7 +22,7 @@ func MakeClient(name, url string, clientPtr interface{}) {
 			continue
 		}
 
-		methodName := strings.ToLower(field.Name)
+		methodName := dashedName(field.Name)
 		endpoint := fmt.Sprintf("%s/%s", strings.TrimSuffix(url, "/"), methodName)
 
 		fn := func(args []reflect.Value) (results []reflect.Value) {

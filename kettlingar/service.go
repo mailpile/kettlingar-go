@@ -175,10 +175,10 @@ func (ks *KettlingarService) RegisterService(service interface{}) error {
 
 		if strings.HasPrefix(method.Name, "PublicApi") {
 			isPublic = true
-			mName = strings.ToLower(strings.TrimPrefix(method.Name, "PublicApi"))
+			mName = dashedName(strings.TrimPrefix(method.Name, "PublicApi"))
 		} else if strings.HasPrefix(method.Name, "Api") {
 			isPublic = false
-			mName = strings.ToLower(strings.TrimPrefix(method.Name, "Api"))
+			mName = dashedName(strings.TrimPrefix(method.Name, "Api"))
 		} else {
 			continue
 		}

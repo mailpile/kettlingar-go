@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -57,7 +58,9 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 	// Initialize Viper
 	viper.SetEnvPrefix(strings.ReplaceAll(strings.ToUpper(ks.Name), "-", "_"))
 	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	// Env vars use UPPER_CASE_WITH_UNDERSCORES: dashed flag names and the
+	// "command.flag" keys used for RPC arguments both map via these replacements.
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
 
 	configDir := filepath.Dir(ks.getStateFilePath())
 	viper.AddConfigPath(configDir)
@@ -207,7 +210,7 @@ func (ks *KettlingarService) addServiceFlags(cmd *cobra.Command) {
 				continue
 			}
 
-			flagName := strings.ToLower(field.Name)
+			flagName := dashedName(field.Name)
 
 			// Use our extracted helper
 			registerFlag(cmd.Flags(), flagName, def, help, field.Type)
@@ -236,7 +239,7 @@ func (ks *KettlingarService) syncServiceConfigs() {
 				continue
 			}
 
-			flagName := strings.ToLower(field.Name)
+			flagName := dashedName(field.Name)
 			f := v.Field(i)
 
 			if f.CanSet() {
@@ -330,6 +333,31 @@ func (ks *KettlingarService) runBackgroundFunction() bool {
 	return false
 }
 
+// dashedName converts a CamelCase argument name to a lower-case dashed flag
+// name, e.g. "MaxConns" -> "max-conns" and "HTTPProxy" -> "http-proxy". A dash
+// is inserted before an upper-case rune that starts a new word: one preceded by
+// a lower-case letter or digit, or one ending an acronym before a lower-case
+// letter.
+func dashedName(name string) string {
+	runes := []rune(name)
+	var b strings.Builder
+	for i, r := range runes {
+		if unicode.IsUpper(r) && i > 0 {
+			prev := runes[i-1]
+			var next rune
+			if i+1 < len(runes) {
+				next = runes[i+1]
+			}
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) ||
+				(unicode.IsUpper(prev) && unicode.IsLower(next)) {
+				b.WriteRune('-')
+			}
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	return b.String()
+}
+
 // isPositionalArgs reports whether a method argument is the special "Args"
 // field that collects positional CLI arguments rather than a --flag. It is an
 // []string, which the manifest records with an empty type name.
@@ -364,7 +392,7 @@ func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
 		if isPositionalArgs(aName, aType) {
 			continue // collected from positional args, not a flag
 		}
-		flagName := strings.ToLower(aName)
+		flagName := dashedName(aName)
 		defaultArgs := ""
 		if def, ok := m.ArgDefaults[aName]; ok {
 			defaultArgs = def
@@ -538,7 +566,7 @@ func (ks *KettlingarService) doCall(m MethodDesc, cmd *cobra.Command, posArgs []
 			continue
 		}
 
-		flagName := strings.ToLower(aName)
+		flagName := dashedName(aName)
 		viperKey := fmt.Sprintf("%s.%s", m.Name, flagName)
 
 		// Use viper.GetString to catch Env Vars or Config file entries
@@ -547,7 +575,7 @@ func (ks *KettlingarService) doCall(m MethodDesc, cmd *cobra.Command, posArgs []
 		if v != "" {
 			val, err := parseValue(v, aType)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: flag --%s: %v\n", strings.ToLower(aName), err)
+				fmt.Fprintf(os.Stderr, "Error: flag --%s: %v\n", flagName, err)
 				return
 			}
 			params[aName] = val
