@@ -341,6 +341,7 @@ func (ks *KettlingarService) runBackgroundFunction() bool {
 func dashedName(name string) string {
 	runes := []rune(name)
 	var b strings.Builder
+	addedDash := false
 	for i, r := range runes {
 		if unicode.IsUpper(r) && i > 0 {
 			prev := runes[i-1]
@@ -350,8 +351,15 @@ func dashedName(name string) string {
 			}
 			if unicode.IsLower(prev) || unicode.IsDigit(prev) ||
 				(unicode.IsUpper(prev) && unicode.IsLower(next)) {
-				b.WriteRune('-')
+				if !addedDash {
+					b.WriteRune('-')
+					addedDash = true
+				}
+			} else {
+				addedDash = false
 			}
+		} else {
+			addedDash = false
 		}
 		b.WriteRune(unicode.ToLower(r))
 	}
