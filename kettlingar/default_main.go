@@ -157,10 +157,33 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 		}
 	}
 
+	// Route this client CLI's own logs to the per-client log file, so an
+	// "api <cmd>" invocation records the RPC calls it makes (and "start" records
+	// that it launched the service). The one exception is the daemon itself: the
+	// server runs (and is re-exec'd) with --foreground and configures its own
+	// sink, so it must keep the default logging rather than the client file.
+	if !hasForegroundFlag(mainArgs) {
+		if closer := ks.SetupClientLogging(); closer != nil {
+			defer closer.Close()
+		}
+	}
+
 	rootCmd.SetArgs(mainArgs)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(ExitCobraFailed)
 	}
+}
+
+// hasForegroundFlag reports whether the args select the foreground server (the
+// daemon), which owns its own logging and so must not be redirected to the
+// per-client log file.
+func hasForegroundFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--foreground" || a == "-F" {
+			return true
+		}
+	}
+	return false
 }
 
 func registerFlag(flags *pflag.FlagSet, name, def, help string, t reflect.Type) {

@@ -17,8 +17,11 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/mailpile/kettlingar-go/kettlingar/logging"
+	"github.com/mailpile/kettlingar-go/kettlingar/logtee"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -54,6 +57,14 @@ type KettlingarService struct {
 	metrics     *Metrics
 	metricsPriv *Metrics
 	Logger      *slog.Logger
+
+	// Logging fan-out and apply state (see logging.go), guarded by logMu.
+	logMu      sync.Mutex
+	logs       *logtee.FanoutHandler
+	logBuffer  *logging.BufferHandler
+	logCloser  io.Closer
+	logApplied bool
+	logKey     string
 }
 
 type ProgressUpdate struct {
@@ -95,11 +106,12 @@ func MakeService(name, secret string, mux *http.ServeMux, service interface{}) *
 		toJson:      NewJsonConverter(),
 		metrics:     NewMetrics(),
 		metricsPriv: NewMetrics(),
-		// Default to the process-wide slog logger so service logs flow through
-		// whatever sink the host application configured, rather than an
-		// unconditional stderr handler. Callers may still override ks.Logger.
-		Logger: slog.Default(),
 	}
+
+	// Install the logging fan-out and make it the default slog logger, so the
+	// service already logs (buffered, with WARN+ on stderr) before its
+	// destination is configured. Sets ks.Logger. Callers may still override it.
+	ks.InstallLogging()
 
 	if err := ks.RegisterService(&DefaultMethods{}); err != nil {
 		ks.Logger.Error(ks.Name+": failed to register default methods", "err", err)
