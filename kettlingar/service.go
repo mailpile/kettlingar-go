@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
-	"os"
 	"reflect"
 	"regexp"
 	"runtime/debug"
@@ -96,19 +95,22 @@ func MakeService(name, secret string, mux *http.ServeMux, service interface{}) *
 		toJson:      NewJsonConverter(),
 		metrics:     NewMetrics(),
 		metricsPriv: NewMetrics(),
-		Logger:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		// Default to the process-wide slog logger so service logs flow through
+		// whatever sink the host application configured, rather than an
+		// unconditional stderr handler. Callers may still override ks.Logger.
+		Logger: slog.Default(),
 	}
 
 	if err := ks.RegisterService(&DefaultMethods{}); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to register default methods! %v\n", err)
+		ks.Logger.Error(ks.Name+": failed to register default methods", "err", err)
 		return nil
 	}
 	if err := ks.RegisterService(&MetricsMethods{}); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to register metrics methods! %v\n", err)
+		ks.Logger.Error(ks.Name+": failed to register metrics methods", "err", err)
 		return nil
 	}
 	if err := ks.RegisterService(service); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to register service methods! %v\n", err)
+		ks.Logger.Error(ks.Name+": failed to register service methods", "err", err)
 		return nil
 	}
 
@@ -319,7 +321,8 @@ func (ks *KettlingarService) handleRPC(ri *RequestInfo, methodVal reflect.Value,
 		if r := recover(); (r != nil) || (ri.HttpCode == 0) {
 			ri.HttpCode = http.StatusInternalServerError
 			http.Error(ri.Writer, "503 Internal Server Error", ri.HttpCode)
-			ks.Logger.Error("Paniced", "method", ri.Method.Name, "error", r, "stack", string(debug.Stack()))
+			ks.Logger.Error(ks.Name+": rpc handler panic",
+				"method", ri.Method.Name, "err", r, "stack", string(debug.Stack()))
 		}
 
 		labels := MetricLabels{
@@ -334,13 +337,18 @@ func (ks *KettlingarService) handleRPC(ri *RequestInfo, methodVal reflect.Value,
 		}
 		elapsed := uint64(time.Since(ri.Timestamp).Microseconds())
 		if ri.Method.Name != "ping" {
-			ks.Logger.Info("Finished", "method", ri.Method.Name, "code", ri.HttpCode, "elapsed_us", elapsed)
+			ks.Logger.Debug(ks.Name+": rpc handled",
+				"method", ri.Method.Name, "code", ri.HttpCode, "authed", ri.IsAuthed, "elapsed_us", elapsed)
 		}
 		ks.MetricsCount("rpc_calls_total", 1, mType, labels)
 		if !ri.Method.IsGenerator {
 			ks.MetricsSample("rpc_calls_time_us", elapsed, mType, labels)
 		}
 	}()
+
+	ks.Logger.Log(ri.Request.Context(), levelTrace, ks.Name+": rpc received",
+		"method", ri.Method.Name, "remote", ri.Request.RemoteAddr,
+		"authed", ri.IsAuthed, "generator", ri.Method.IsGenerator)
 
 	readMsgpack := strings.Contains(ri.Request.Header.Get("Content-Type"), "msgpack")
 
@@ -369,7 +377,8 @@ func (ks *KettlingarService) handleRPC(ri *RequestInfo, methodVal reflect.Value,
 			}
 			if unmarshalErr != nil {
 				ri.HttpCode = http.StatusBadRequest
-				fmt.Fprintf(os.Stderr, "%+v: err %v", ri.Request, unmarshalErr)
+				ks.Logger.Debug(ks.Name+": rpc bad request",
+					"method", ri.Method.Name, "remote", ri.Request.RemoteAddr, "err", unmarshalErr)
 				http.Error(ri.Writer, "400 Bad Request: Invalid Argument Structure", ri.HttpCode)
 				return
 			}
@@ -522,13 +531,13 @@ func (ks *KettlingarService) ForgivingJSON(v interface{}) []byte {
 	encoder := msgpack.NewEncoder(&mpBuf)
 	encoder.SetSortMapKeys(true)
 	if err := encoder.Encode(v); err != nil {
-		fmt.Fprintf(os.Stderr, "uhoh1: %v\n", err)
+		ks.Logger.Error(ks.Name+": msgpack encode failed", "err", err)
 		return nil
 	}
 
 	var jsonBuf bytes.Buffer
 	if err := ks.toJson.Convert(&mpBuf, &jsonBuf); err != nil {
-		fmt.Fprintf(os.Stderr, "uhoh2: %v\n", err)
+		ks.Logger.Error(ks.Name+": msgpack->json convert failed", "err", err)
 		return nil
 	}
 	return jsonBuf.Bytes()
@@ -540,6 +549,16 @@ type ProgressReporter interface {
 
 func (progress *ProgressUpdate) GetProgress() *ProgressUpdate {
 	return progress
+}
+
+// String renders a progress update as its message (the caller is expected to
+// format it), prefixed with "error: " when IsError is set. This keeps progress
+// lines clean when written to stderr, rather than dumping the struct.
+func (progress *ProgressUpdate) String() string {
+	if progress.IsError {
+		return "error: " + progress.Progress
+	}
+	return progress.Progress
 }
 
 func getIndirectType(t reflect.Type) reflect.Type {

@@ -83,10 +83,14 @@ func (r *Response) Render(mimeType string) (string, []byte) {
 	switch mimeType {
 	case "text/plain", "text":
 		return mimeType, []byte(r.String())
-	case "text/silly":
+	case "text/silly", "silly":
 		return mimeType, []byte("<BONK!>\n")
+        case "?":
+                // A comma separated list of types we accept on the CLI.
+                return "silly,text", nil
 	}
-	return "text/plain", nil // Default MIME type for Response objects
+        // Default MIME type for Response objects
+	return "text/plain", nil
 }
 
 func (svc *MyService) ServiceStartup(ks *kettlingar.KettlingarService) error {

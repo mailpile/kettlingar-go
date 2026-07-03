@@ -2,7 +2,6 @@ package kettlingar
 
 import (
 	"bytes"
-	"fmt"
 	"strings"
 	"testing"
 	"time"

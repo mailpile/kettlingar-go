@@ -1,11 +1,14 @@
 package kettlingar
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -68,7 +71,7 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 	viper.SetConfigType("yaml")
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			fmt.Fprintf(os.Stderr, "Error reading config file: %v\n", err)
+			ks.Logger.Warn(ks.Name+": error reading config file", "err", err)
 		}
 	}
 
@@ -85,7 +88,8 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 	rootCmd.PersistentFlags().StringVarP(&ks.Url, "url", "u", "", "URL of server")
 	viper.BindPFlag("url", rootCmd.PersistentFlags().Lookup("url"))
 
-	rootCmd.PersistentFlags().StringVarP(&outFormat, "format", "f", "text", "text, json, or msgpack")
+	rootCmd.PersistentFlags().StringVarP(&outFormat,
+		"format", "f", "text", "text, json, msgpack, ...")
 
 	// 1. Setup Static Commands
 	startCmd := &cobra.Command{
@@ -120,11 +124,14 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 		if which == "" {
 			which = ks.Url
 		}
-		be_status := fmt.Sprintf("\nService is down, not reachable via %s\n\n", which)
+		be_status := fmt.Sprintf(
+			"\nService is down, not reachable via %s\n\n", which)
 
 		manifest, err := ks.fetchManifest()
 		if err == nil {
-			be_status = fmt.Sprintf("\nService is up!\n - URL: %s\n - File: %s\n\n", ks.Url, ks.StateFn)
+			be_status = fmt.Sprintf(
+				"\nService is up!\n - URL: %s\n - File: %s\n\n",
+				ks.Url, ks.StateFn)
 			// Augment commands if they haven't been added yet
 			for _, m := range manifest {
 				if findSubCommand(rootCmd, m.Name) == nil {
@@ -314,7 +321,7 @@ func (ks *KettlingarService) runShutdownFunctions() {
 	for _, svc := range ks.services {
 		if v, ok := svc.(ServiceWithShutdown); ok {
 			if err := v.ServiceShutdown(ks); err != nil {
-				fmt.Fprintf(os.Stderr, "Error shutting down: %+v\n", err)
+				ks.Logger.Error(ks.Name+": service shutdown error", "err", err)
 			}
 		}
 	}
@@ -324,7 +331,7 @@ func (ks *KettlingarService) runBackgroundFunction() bool {
 	for _, svc := range ks.services {
 		if v, ok := svc.(ServiceWithBackground); ok {
 			if err := v.ServiceBackground(ks); err != nil {
-				fmt.Fprintf(os.Stderr, "Error daemonizing: %v\n", err)
+				ks.Logger.Error(ks.Name+": daemonizing failed", "err", err)
 				os.Exit(ExitBackgroundFailed)
 			}
 			return true
@@ -388,10 +395,15 @@ func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
 	if methodHasPositionalArgs(m) {
 		use += " [args...]"
 	}
+	long := m.Docs
+	if extra := cliRenderFormats(m.ReturnType); extra != "" {
+		long = strings.TrimRight(long, "\n") + fmt.Sprintf(
+			"\n\nExtra -f formats for this command: %s", extra)
+	}
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: m.Help, // Used in the command list
-		Long:  m.Docs, // Shown when specifically calling 'help <cmd>'
+		Long:  long,   // Shown when specifically calling 'help <cmd>'
 		Run: func(cmd *cobra.Command, args []string) {
 			ks.doCall(m, cmd, args)
 		},
@@ -410,6 +422,27 @@ func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
 		viper.BindPFlag(viperKey, cmd.Flags().Lookup(flagName))
 	}
 	return cmd
+}
+
+// cliRenderFormats asks a method's return type which extra -f format names it
+// supports, by calling Render("?") on a zero value. The convention is that
+// Render("?") returns a comma-separated list of short CLI names (no MIME slash);
+// a type that does not implement the convention returns its default MIME (which
+// contains a slash) and is treated as having no extras. Returns "" when there
+// are none.
+func cliRenderFormats(rt reflect.Type) string {
+	if rt == nil {
+		return ""
+	}
+	v, ok := reflect.New(rt).Interface().(DataRenderer)
+	if !ok {
+		return ""
+	}
+	list, _ := v.Render("?")
+	if list == "" || strings.Contains(list, "/") {
+		return ""
+	}
+	return list
 }
 
 // Helper to check if a command already exists
@@ -431,25 +464,22 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	ks.autoDiscover()
 	if ks.Url != defaultURL {
 		if ks.probeOrStopServer(true) {
-			fmt.Fprintf(os.Stderr, "Failed! Already running.\n - URL: %s\n - File: %s\n\n", ks.Url, ks.StateFn)
+			ks.Logger.Error(ks.Name+": already running", "url", ks.Url, "file", ks.StateFn)
 			os.Exit(ExitAlreadyRunning)
 		}
 	}
 
 	if err := ks.runSetupFunctions(); err != nil {
-		fmt.Fprintf(os.Stderr, "Setup Failed! %+v\n", err)
+		ks.Logger.Error(ks.Name+": setup failed", "err", err)
 		os.Exit(ExitSetupFailed)
 	}
 
 	if !foreground {
 		if !ks.runBackgroundFunction() {
-			args := append(os.Args[1:], "--foreground")
-			newCmd := exec.Command(os.Args[0], args...)
-			if err := newCmd.Start(); err != nil {
-				fmt.Printf("Error daemonizing: %v\n", err)
-				return
+			if err := ks.spawnBackground(); err != nil {
+				ks.Logger.Error(ks.Name+": spawn background failed", "err", err)
+				os.Exit(ExitStartupFailed)
 			}
-			fmt.Printf("%s started in background (PID: %d)\n", ks.Name, newCmd.Process.Pid)
 		}
 		os.Exit(ExitOK)
 	}
@@ -458,24 +488,40 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	stateData := fmt.Sprintf("%s\n%d", ks.Url, os.Getpid())
 	os.WriteFile(statePath, []byte(stateData), 0600)
 
-	srv := &http.Server{Addr: ":" + port, Handler: ks.Mux}
+	srv := &http.Server{Handler: ks.Mux}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	if err := ks.runStartupFunctions(); err != nil {
-		fmt.Fprintf(os.Stderr, "Startup Failed! %+v\n", err)
+		signalReady("ERR startup failed: " + err.Error())
+		ks.Logger.Error(ks.Name+": startup failed", "err", err)
 		os.Exit(ExitStartupFailed)
 	}
 
+	// Bind the listener before signaling readiness: once the socket is bound
+	// the kernel queues connections, so a parent told "ready" (and any CLI call
+	// after it) will not see connection-refused. Startup hooks have already run,
+	// so the service is fully configured by the time we accept.
+	ln, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		signalReady("ERR listen failed: " + err.Error())
+		ks.Logger.Error(ks.Name+": listen failed", "port", port, "err", err)
+		os.Remove(statePath)
+		os.Exit(ExitStartupFailed)
+	}
+	signalReady("OK")
+
 	go func() {
 		fmt.Printf("%s listening on %s/%s (PID: %d)\n", ks.Name, baseURL, ks.Secret, os.Getpid())
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			fmt.Printf("HTTP server error: %v\n", err)
+		ks.Logger.Info(ks.Name+": listening", "url", baseURL, "pid", os.Getpid())
+		if err := srv.Serve(ln); err != http.ErrServerClosed {
+			ks.Logger.Error(ks.Name+": http server error", "err", err)
 		}
 	}()
 
 	<-stop
 	fmt.Println("\nShutting down...")
+	ks.Logger.Info(ks.Name + ": shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
@@ -483,12 +529,104 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	os.Remove(statePath)
 }
 
+// readyFdEnv names the inherited pipe file descriptor a background child uses to
+// report readiness to the parent that spawned it. startupTimeout bounds how long
+// the parent waits for that signal before giving up.
+const (
+	readyFdEnv     = "KETTLINGAR_READY_FD"
+	startupTimeout = 30 * time.Second
+)
+
+// spawnBackground re-execs the process in --foreground mode and waits for it to
+// report that it is fully started (configuration loaded and listener bound)
+// before returning. This makes "start" a synchronous readiness barrier: when it
+// returns success the service is actually able to serve requests, so a CLI
+// command issued immediately afterwards cannot race an unready server.
+func (ks *KettlingarService) spawnBackground() error {
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("Error daemonizing: %v", err)
+	}
+	defer readPipe.Close()
+
+	args := append(os.Args[1:], "--foreground")
+	newCmd := exec.Command(os.Args[0], args...)
+	newCmd.ExtraFiles = []*os.File{writePipe} // becomes fd 3 in the child
+	newCmd.Env = append(os.Environ(), fmt.Sprintf("%s=3", readyFdEnv))
+	if err := newCmd.Start(); err != nil {
+		writePipe.Close()
+		return fmt.Errorf("Error daemonizing: %v", err)
+	}
+	// The child holds the write end now; drop ours so we observe EOF if it dies
+	// without signaling.
+	writePipe.Close()
+
+	if err := ks.awaitChildReady(readPipe, newCmd); err != nil {
+		return fmt.Errorf("Failed to start %s: %v", ks.Name, err)
+	}
+	fmt.Printf("%s started in background (PID: %d)\n", ks.Name, newCmd.Process.Pid)
+	ks.Logger.Info(ks.Name+": started in background", "pid", newCmd.Process.Pid)
+	return nil
+}
+
+// awaitChildReady blocks until the background child signals readiness over the
+// pipe, reports a startup error, dies, or the timeout elapses.
+func (ks *KettlingarService) awaitChildReady(r *os.File, cmd *exec.Cmd) error {
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r) // returns at EOF, i.e. when the child closes its end
+		done <- strings.TrimSpace(string(data))
+	}()
+	select {
+	case line := <-done:
+		switch {
+		case strings.HasPrefix(line, "OK"):
+			return nil
+		case strings.HasPrefix(line, "ERR "):
+			cmd.Wait()
+			return errors.New(strings.TrimPrefix(line, "ERR "))
+		default:
+			// Pipe closed with no status: the child exited before signaling.
+			cmd.Wait()
+			return errors.New("service exited before it became ready")
+		}
+	case <-time.After(startupTimeout):
+		return fmt.Errorf("timed out after %s waiting for service to become ready", startupTimeout)
+	}
+}
+
+// signalReady reports the child's startup outcome to the parent over the
+// inherited pipe ("OK", or "ERR <message>"), then closes it so the parent's read
+// unblocks. It is a no-op when not spawned with a readiness pipe (e.g. a manual
+// "start --foreground"), so direct foreground runs are unaffected.
+func signalReady(status string) {
+	fdStr := os.Getenv(readyFdEnv)
+	if fdStr == "" {
+		return
+	}
+	os.Unsetenv(readyFdEnv) // signal at most once
+	fd, err := strconv.Atoi(fdStr)
+	if err != nil {
+		return
+	}
+	f := os.NewFile(uintptr(fd), "kettlingar-ready")
+	if f == nil {
+		return
+	}
+	io.WriteString(f, status+"\n")
+	f.Close()
+}
+
+func (ks *KettlingarService) Stop() bool {
+	return ks.probeOrStopServer(false)
+}
+
 func (ks *KettlingarService) probeOrStopServer(onlyProbe bool) bool {
 	statePath := ks.getStateFilePath()
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		if !onlyProbe {
-			fmt.Fprintf(os.Stderr, "Server not running: %v", err)
+			ks.Logger.Warn(ks.Name+": server not running", "err", err)
 		}
 		return false
 	}
@@ -508,9 +646,10 @@ func (ks *KettlingarService) probeOrStopServer(onlyProbe bool) bool {
 	if process, err := os.FindProcess(pid); err == nil {
 		if !onlyProbe {
 			fmt.Printf("Stopping %s (PID: %d)...\n", ks.Name, pid)
+			ks.Logger.Info(ks.Name+": stopping", "pid", pid)
 		}
 		if err := process.Signal(sending); err != nil {
-			fmt.Fprintf(os.Stderr, "Removing stale state: %s\n", statePath)
+			ks.Logger.Warn(ks.Name+": removing stale state", "file", statePath, "err", err)
 			os.Remove(statePath)
 			return false
 		}
@@ -560,6 +699,14 @@ func (ks *KettlingarService) fetchManifest() ([]MethodDesc, error) {
 		json.Unmarshal(body, &pr)
 	}
 
+	// The CLI builds its commands from the locally compiled registry, so a
+	// running service with a different API version may not accept them. This is a
+	// warning state, not a hard failure: log it loudly but keep going.
+	if pr.Version != "" && pr.Version != ks.Version {
+		ks.Logger.Error("CLI/service API version mismatch",
+			"cli_version", ks.Version, "service_version", pr.Version)
+	}
+
 	return ks.registry, nil
 }
 
@@ -599,26 +746,55 @@ func (ks *KettlingarService) doCall(m MethodDesc, cmd *cobra.Command, posArgs []
 		req.Header.Set("Accept", "application/json")
 	}
 
+	// Trace the call without the URL: ks.Url embeds the auth secret.
+	ks.Logger.Log(req.Context(), levelTrace, ks.Name+": cli rpc request",
+		"method", m.Name, "generator", m.IsGenerator, "req_bytes", len(payload))
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		ks.Logger.Log(req.Context(), levelTrace, ks.Name+": cli rpc request failed",
+			"method", m.Name, "err", err)
 		fmt.Println("Error:", err)
 		return
 	}
 	defer resp.Body.Close()
+	ks.Logger.Log(req.Context(), levelTrace, ks.Name+": cli rpc response",
+		"method", m.Name, "status", resp.StatusCode)
 
 	if m.IsGenerator {
+		// Stream framed objects one at a time. A single Read can coalesce
+		// several yielded values, so the body must be decoded by its framing
+		// (msgpack self-delimits; JSON and SSE are line/blank-line delimited)
+		// rather than treating each Read as one object.
 		mimeType := resp.Header.Get("Content-Type")
-		buf := make([]byte, 1024*1024)
-		for {
-			n, err := resp.Body.Read(buf)
-			if n > 0 {
-				printOutput(m, buf[:n], mimeType)
+		switch {
+		case strings.Contains(mimeType, "msgpack"):
+			dec := msgpack.NewDecoder(resp.Body)
+			for {
+				var raw msgpack.RawMessage
+				if err := dec.Decode(&raw); err != nil {
+					if err != io.EOF {
+						fmt.Printf("Read error: %v\n", err)
+					}
+					break
+				}
+				printOutput(m, raw, mimeType)
 			}
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				fmt.Printf("Read error: %v\n", err)
-				break
+		case strings.Contains(mimeType, "event-stream"):
+			sc := bufio.NewScanner(resp.Body)
+			sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
+			for sc.Scan() {
+				if line := sc.Text(); strings.HasPrefix(line, "data: ") {
+					printOutput(m, []byte(strings.TrimPrefix(line, "data: ")), "application/json")
+				}
+			}
+		default: // newline-delimited JSON (also used for text output)
+			sc := bufio.NewScanner(resp.Body)
+			sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
+			for sc.Scan() {
+				if b := sc.Bytes(); len(strings.TrimSpace(string(b))) > 0 {
+					printOutput(m, b, mimeType)
+				}
 			}
 		}
 	} else {
@@ -651,6 +827,18 @@ func printOutput(m MethodDesc, data []byte, contentType string) {
 			if progress.Progress != "" {
 				fmt.Fprintf(os.Stderr, "%v\n", progress)
 				if !progress.IsBoth {
+					return
+				}
+			}
+		}
+		// For a non-default format the server sent as JSON/msgpack, ask the
+		// return type to render it client-side via its Render method (the same
+		// way "text" is produced by String). This makes formats like yaml that
+		// kettlingar does not negotiate natively reachable through -f.
+		if outFormat != "text" {
+			if r, ok := target.(DataRenderer); ok {
+				if _, rendered := r.Render(outFormat); rendered != nil {
+					os.Stdout.Write(rendered)
 					return
 				}
 			}
