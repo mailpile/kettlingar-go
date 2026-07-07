@@ -102,6 +102,16 @@ func (ks *KettlingarService) MetricsCount(key string, val uint64, public bool, l
 	m.Counts[k] = val
 }
 
+// MetricsCountValue reads a counter back from the metrics registry, so a
+// service can consume the numbers it publishes (e.g. render them in a UI)
+// without keeping a parallel tally. Returns 0 for an unknown key/label set.
+func (ks *KettlingarService) MetricsCountValue(key string, public bool, labels MetricLabels) uint64 {
+	m := ks.getMetrics(public)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.Counts[keyWithLabels(key, labels)]
+}
+
 func (ks *KettlingarService) MetricsSample(key string, val uint64, public bool, labels MetricLabels) {
 	bucket := int(math.Ceil(math.Log2(float64(val)))) - 3
 
