@@ -70,9 +70,23 @@ func keyWithLabels(key string, labels MetricLabels) string {
 
 	lText := ""
 	for _, lab := range keys {
-		lText += ", " + lab + "=\"" + labels[lab] + "\""
+		lText += "," + lab + "=\"" + escapeLabel(labels[lab]) + "\""
 	}
-	return key + "{" + lText[2:] + "}"
+	return key + "{" + lText[1:] + "}"
+}
+
+// escapeLabel escapes a label value as the exposition formats require; an
+// unescaped quote or newline would corrupt the whole scrape.
+func escapeLabel(v string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(v)
+}
+
+// MetricsHelp sets the HELP text rendered for the metric family key.
+func (ks *KettlingarService) MetricsHelp(key, help string, public bool) {
+	m := ks.getMetrics(public)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Help[key] = help
 }
 
 func (ks *KettlingarService) MetricsInfo(key, val string, public bool, labels MetricLabels) {
@@ -128,8 +142,9 @@ func (ks *KettlingarService) MetricsSample(key string, val uint64, public bool, 
 	// Slot 1 is the real sum
 	histogram[1] += val
 
+	// Slots 0 and 1 hold the timestamp and sum; buckets start at 2.
 	if bucket < 2 {
-		bucket = 1.0
+		bucket = 2
 	} else if bucket >= len(m.Histograms[k]) {
 		bucket = len(m.Histograms[k]) - 1
 	}
@@ -145,15 +160,35 @@ type MetricsResponse struct {
 	PrivMetrics Metrics   `msgpack:"private_metrics" json:"private_metrics"`
 }
 
+// snapshot copies m's series under its lock, so they can be encoded or
+// rendered while m keeps changing. Histograms are arrays, so copied whole.
+func (m *Metrics) snapshot() Metrics {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return Metrics{
+		Help:       maps.Clone(m.Help),
+		Info:       maps.Clone(m.Info),
+		Counts:     maps.Clone(m.Counts),
+		Guages:     maps.Clone(m.Guages),
+		Histograms: maps.Clone(m.Histograms),
+	}
+}
+
 func (d *MetricsMethods) PublicApiMetrics(ri *RequestInfo) MetricsResponse {
 	response := MetricsResponse{
 		Timestamp:  time.Now(),
-		PubMetrics: *ri.Service.metrics,
+		PubMetrics: ri.Service.metrics.snapshot(),
 	}
 	if ri.IsAuthed {
-		response.PrivMetrics = *ri.Service.metricsPriv
+		response.PrivMetrics = ri.Service.metricsPriv.snapshot()
 	}
 	return response
+}
+
+// String renders the CLI's default text output: the CLI prints a result
+// with %v, consulting Render only for other -f formats.
+func (mr *MetricsResponse) String() string {
+	return string(mr.RenderOpenMetrics())
 }
 
 func (mr *MetricsResponse) Render(mimeType string) (string, []byte) {
@@ -167,9 +202,9 @@ func (mr *MetricsResponse) Render(mimeType string) (string, []byte) {
 func addLabel(key, k, v string) string {
 	klen := len(key) - 1
 	if key[klen:] == "}" {
-		return fmt.Sprintf("%s, %s=\"%s\"}", key[:klen], k, v)
+		return fmt.Sprintf("%s,%s=\"%s\"}", key[:klen], k, escapeLabel(v))
 	}
-	return fmt.Sprintf("%s{%s=\"%s\"}", key, k, v)
+	return fmt.Sprintf("%s{%s=\"%s\"}", key, k, escapeLabel(v))
 }
 
 func (mr *MetricsResponse) RenderOpenMetrics() []byte {
@@ -201,7 +236,7 @@ func (mr *MetricsResponse) RenderOpenMetrics() []byte {
 		all[k] = fmt.Sprintf("%d", v)
 	}
 	for k, v := range guages {
-		aTypes[k] = "guage"
+		aTypes[k] = "gauge"
 		all[k] = fmt.Sprintf("%d", v)
 	}
 	for k := range histogs {
@@ -227,7 +262,7 @@ func (mr *MetricsResponse) RenderOpenMetrics() []byte {
 				vHelp = t
 			}
 			output = append(output, fmt.Sprintf(
-				"\n# HELP %s %s\n# TYPE %s %s\n",
+				"# HELP %s %s\n# TYPE %s %s\n",
 				baseName, vHelp, baseName, vType))
 		}
 		switch vType {
@@ -242,8 +277,8 @@ func (mr *MetricsResponse) RenderOpenMetrics() []byte {
 		lastMetric = baseName
 	}
 
-	output = append(output, "\n# EOF\n")
-	output[0] = strings.TrimSpace(output[0]) + "\n"
+	// OpenMetrics forbids blank lines; a parser rejects the whole scrape.
+	output = append(output, "# EOF\n")
 	return []byte(strings.Join(output, ""))
 }
 
