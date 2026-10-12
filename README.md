@@ -62,7 +62,7 @@ See [main.go](main.go) for a working example.
 ...
 
 
-# Acces controls
+# Access controls
 
 A `kettlingar` microservice offers two levels of access control:
 
@@ -141,6 +141,16 @@ that stop something at ERROR:
   genuine program output (RPC results, those status banners) goes to stdout; fatal
   failures rely on the host's level policy (e.g. WARN+ mirrored to the console) for
   visibility rather than writing stderr themselves.
+
+## Data
+
+`DataDir` returns the service's default data directory, and
+`DefaultDataDir(name)` the same for tools that read a service's data
+without it running: `$XDG_DATA_HOME/Name` or `~/.local/share/Name` on Unix,
+`~/Library/Application Support/Name` on macOS, `%LocalAppData%\Name` on
+Windows.
+
+Services choose whether to create it and whether to let a setting override it.
 
 
 # Kettlingar? Huh?
