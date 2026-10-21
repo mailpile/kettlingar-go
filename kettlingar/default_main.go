@@ -92,22 +92,29 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 		"format", "f", "text", "text, json, msgpack, ...")
 
 	// 1. Setup Static Commands
+	rootCmd.AddGroup(&cobra.Group{ID: ServiceGroup, Title: "Service Commands:"})
+	rootCmd.SetHelpCommandGroupID(ServiceGroup)
+	rootCmd.SetCompletionCommandGroupID(ServiceGroup)
+
 	startCmd := &cobra.Command{
-		Use:   "start",
-		Short: "Start server",
+		Use:     "start",
+		GroupID: ServiceGroup,
+		Short:   "Start server",
 		Run: func(cmd *cobra.Command, args []string) {
 			ks.syncServiceConfigs()
 			ks.startServer(cmd)
 		},
 	}
-	startCmd.Flags().StringP("port", "p", "8080", "Port to listen on")
+	startCmd.Flags().StringP("port", "p", "0", "Port to listen on (0 picks a free one)")
+	startCmd.Flags().String("host", "127.0.0.1", "Address to listen on (0.0.0.0 for all interfaces)")
 	startCmd.Flags().BoolP("foreground", "F", false, "Run in foreground")
 	ks.addServiceFlags(startCmd) // Iterate over ks.services, add app-specific flags
 	rootCmd.AddCommand(startCmd)
 
 	rootCmd.AddCommand(&cobra.Command{
-		Use:   "stop",
-		Short: "Stop server (via PID in state file)",
+		Use:     "stop",
+		GroupID: ServiceGroup,
+		Short:   "Stop server (via PID in state file)",
 		Run: func(cmd *cobra.Command, args []string) {
 			ks.probeOrStopServer(false)
 		},
@@ -133,11 +140,7 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 				"\nService is up!\n - URL: %s\n - File: %s\n\n",
 				ks.Url, ks.StateFn)
 			// Augment commands if they haven't been added yet
-			for _, m := range manifest {
-				if findSubCommand(rootCmd, m.Name) == nil {
-					rootCmd.AddCommand(ks.createRpcCommand(m))
-				}
-			}
+			ks.addRpcCommands(rootCmd, manifest)
 		}
 		originalHelp(cmd, args)
 		fmt.Print(be_status)
@@ -149,11 +152,7 @@ func (ks *KettlingarService) DefaultMain(mainArg0 string, mainArgs []string) {
 		ks.autoDiscover()
 		manifest, err := ks.fetchManifest()
 		if err == nil {
-			for _, m := range manifest {
-				if findSubCommand(rootCmd, m.Name) == nil {
-					rootCmd.AddCommand(ks.createRpcCommand(m))
-				}
-			}
+			ks.addRpcCommands(rootCmd, manifest)
 		}
 	}
 
@@ -412,8 +411,33 @@ func methodHasPositionalArgs(m MethodDesc) bool {
 	return false
 }
 
-// Helper to create a Cobra command from a MethodDesc
-func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
+// addRpcCommands adds a command for each method in manifest not already
+// on root, and the GroupedAPI groups they use, in the order given. Cobra
+// prints a group's title even when it is empty.
+func (ks *KettlingarService) addRpcCommands(root *cobra.Command, manifest []MethodDesc) {
+	used := make(map[string]bool)
+	for _, m := range manifest {
+		used[m.Group] = true
+	}
+	for _, svc := range ks.services {
+		if g, ok := svc.(GroupedAPI); ok {
+			for _, grp := range g.GetGroups() {
+				if used[grp.ID] && !root.ContainsGroup(grp.ID) {
+					root.AddGroup(&cobra.Group{ID: grp.ID, Title: grp.Title})
+				}
+			}
+		}
+	}
+	for _, m := range manifest {
+		if findSubCommand(root, m.Name) == nil {
+			root.AddCommand(ks.createRpcCommand(root, m))
+		}
+	}
+}
+
+// Helper to create a Cobra command from a MethodDesc. The command joins
+// m.Group only if root has it: cobra fails on an unregistered group.
+func (ks *KettlingarService) createRpcCommand(root *cobra.Command, m MethodDesc) *cobra.Command {
 	use := m.Name
 	if methodHasPositionalArgs(m) {
 		use += " [args...]"
@@ -430,6 +454,9 @@ func (ks *KettlingarService) createRpcCommand(m MethodDesc) *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			ks.doCall(m, cmd, args)
 		},
+	}
+	if root.ContainsGroup(m.Group) {
+		cmd.GroupID = m.Group
 	}
 	for aName, aType := range m.Args {
 		if isPositionalArgs(aName, aType) {
@@ -480,8 +507,8 @@ func findSubCommand(root *cobra.Command, name string) *cobra.Command {
 
 func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	port, _ := cmd.Flags().GetString("port")
+	host, _ := cmd.Flags().GetString("host")
 	foreground, _ := cmd.Flags().GetBool("foreground")
-	baseURL := fmt.Sprintf("http://localhost:%s", port)
 	statePath := ks.getStateFilePath()
 
 	ks.autoDiscover()
@@ -507,10 +534,6 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 		os.Exit(ExitOK)
 	}
 
-	ks.Url = fmt.Sprintf("%s/%s", baseURL, ks.Secret)
-	stateData := fmt.Sprintf("%s\n%d", ks.Url, os.Getpid())
-	os.WriteFile(statePath, []byte(stateData), 0600)
-
 	srv := &http.Server{Handler: ks.Mux}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -525,13 +548,24 @@ func (ks *KettlingarService) startServer(cmd *cobra.Command) {
 	// the kernel queues connections, so a parent told "ready" (and any CLI call
 	// after it) will not see connection-refused. Startup hooks have already run,
 	// so the service is fully configured by the time we accept.
-	ln, err := net.Listen("tcp", ":"+port)
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		signalReady("ERR listen failed: " + err.Error())
-		ks.Logger.Error(ks.Name+": listen failed", "port", port, "err", err)
-		os.Remove(statePath)
+		ks.Logger.Error(ks.Name+": listen failed", "host", host, "port", port, "err", err)
 		os.Exit(ExitStartupFailed)
 	}
+
+	// The state file names the bound port, which port 0 leaves to the
+	// kernel; an unspecified host is reached through loopback.
+	addr := ln.Addr().(*net.TCPAddr)
+	urlHost := host
+	if addr.IP.IsUnspecified() {
+		urlHost = "127.0.0.1"
+	}
+	baseURL := "http://" + net.JoinHostPort(urlHost, strconv.Itoa(addr.Port))
+	ks.Url = fmt.Sprintf("%s/%s", baseURL, ks.Secret)
+	stateData := fmt.Sprintf("%s\n%d", ks.Url, os.Getpid())
+	os.WriteFile(statePath, []byte(stateData), 0600)
 	signalReady("OK")
 
 	go func() {
@@ -763,10 +797,13 @@ func (ks *KettlingarService) doCall(m MethodDesc, cmd *cobra.Command, posArgs []
 	payload, _ := msgpack.Marshal(params)
 	req, _ := http.NewRequest("POST", ks.Url+"/"+m.Name, bytes.NewBuffer(payload))
 	req.Header.Set("Content-Type", "application/msgpack")
-	if outFormat == "msgpack" {
-		req.Header.Set("Accept", "application/msgpack")
-	} else {
+	// msgpack is native: binary fields survive it, where the server's
+	// JSON writes them as hex. Only -f json asks for JSON, to print it as
+	// sent; every other format is rendered here from the msgpack.
+	if outFormat == "json" {
 		req.Header.Set("Accept", "application/json")
+	} else {
+		req.Header.Set("Accept", "application/msgpack")
 	}
 
 	// Trace the call without the URL: ks.Url embeds the auth secret.

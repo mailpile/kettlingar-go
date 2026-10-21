@@ -17,8 +17,9 @@ type PingResponse struct {
 func (d *DefaultMethods) GetDocs() map[string]MethodDesc {
 	return map[string]MethodDesc{
 		"ping": {
-			Help: "Checks server status and returns the API manifest",
-			Docs: "This endpoint provides the complete list of registered methods",
+			Help:  "Checks server status and returns the API manifest",
+			Docs:  "This endpoint provides the complete list of registered methods",
+			Group: ServiceGroup,
 		},
 	}
 }

@@ -38,10 +38,32 @@ type MethodDesc struct {
 	Returns     string            `msgpack:"returns" json:"returns"`
 	IsGenerator bool              `msgpack:"is_generator" json:"is_generator"`
 	IsPublic    bool              `msgpack:"is_public" json:"is_public"`
+	// Group is the ID of a Group from a GroupedAPI, under which the CLI's
+	// help lists the command. Empty or unknown lists it under
+	// "Additional Commands". A later service's GetDocs entry naming an earlier
+	// service's method moves it to its Group.
+	Group string `msgpack:"group" json:"group"`
 }
 
 type DocumentedAPI interface {
 	GetDocs() map[string]MethodDesc
+}
+
+// Group is a heading in the CLI's command list.
+type Group struct {
+	ID    string
+	Title string
+}
+
+// ServiceGroup is the Group of start, stop, help and kettlingar's own
+// methods.
+const ServiceGroup = "service"
+
+// GroupedAPI is implemented by a service whose commands the CLI's help
+// should list under headings. Help shows the groups in the order given,
+// after the service group.
+type GroupedAPI interface {
+	GetGroups() []Group
 }
 
 type KettlingarService struct {
@@ -311,6 +333,16 @@ func (ks *KettlingarService) RegisterService(service interface{}) error {
 
 		ks.Mux.HandleFunc("/"+ks.Secret+"/"+mName, handler)
 		ks.Mux.HandleFunc("/"+mName, handler)
+	}
+
+	// Docs naming a method an earlier service registered may regroup it,
+	// so an app can file kettlingar's own methods under its groups.
+	for name, d := range docs {
+		for i := range ks.registry {
+			if ks.registry[i].Name == name && d.Group != "" {
+				ks.registry[i].Group = d.Group
+			}
+		}
 	}
 
 	return nil

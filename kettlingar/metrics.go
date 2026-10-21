@@ -48,8 +48,9 @@ func NewMetrics() *Metrics {
 func (d *MetricsMethods) GetDocs() map[string]MethodDesc {
 	return map[string]MethodDesc{
 		"metrics": {
-			Help: "Return internal service metrics",
-			Docs: "This endpoint returns the internal service metrics",
+			Help:  "Return internal service metrics",
+			Docs:  "This endpoint returns the internal service metrics",
+			Group: ServiceGroup,
 		},
 	}
 }
